@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cloud Fleet Monitor</title>
+<style>
+  :root{--bg:#eef2f1;--panel:#fff;--ink:#17302e;--muted:#5d726f;--line:#c9d6d3;--teal:#0f766e;--warn:#c2410c;--ok:#2f7d4f;--down:#8a1c1c}
+  @media (prefers-color-scheme:dark){:root{--bg:#10201f;--panel:#172b29;--ink:#e3efec;--muted:#93aaa6;--line:#2c4543;--teal:#4fd1c0;--warn:#f59e6b;--ok:#6fcf97;--down:#ff8a8a}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+  header{padding:20px 24px 8px}
+  h1{margin:0;font-size:1.5rem;letter-spacing:-.01em}
+  header p{margin:4px 0 0;color:var(--muted);max-width:70ch}
+  main{display:grid;gap:16px;padding:16px 24px 32px;grid-template-columns:260px 1fr 280px}
+  @media (max-width:980px){main{grid-template-columns:1fr}}
+  section{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px}
+  h2{margin:0 0 10px;font-size:1rem}
+  .kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
+  .kpi b{display:block;font-size:1.5rem}
+  .kpi span{color:var(--muted);font-size:.85rem}
+  .server{display:flex;justify-content:space-between;align-items:center;width:100%;padding:8px 10px;margin-bottom:6px;border:1px solid var(--line);border-radius:6px;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer}
+  .server[aria-pressed=true]{border-color:var(--teal);box-shadow:inset 3px 0 0 var(--teal)}
+  .server small{color:var(--muted);display:block}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;background:var(--ok)}
+  .dot.hot{background:var(--warn)} .dot.down{background:var(--down)}
+  svg.chart{width:100%;height:170px;background:transparent;border-bottom:1px solid var(--line)}
+  .legend{color:var(--muted);font-size:.85rem;margin:6px 0 12px}
+  .controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  button.act{padding:8px 12px;border:1px solid var(--teal);background:var(--teal);color:#fff;border-radius:6px;font:inherit;cursor:pointer}
+  button.act.alt{background:none;color:var(--ink);border-color:var(--line)}
+  button:focus-visible,input:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+  ul.log{list-style:none;margin:0;padding:0;max-height:300px;overflow:auto;font-size:.9rem}
+  ul.log li{padding:6px 0;border-bottom:1px solid var(--line)}
+  ul.log .t{color:var(--muted);margin-right:6px}
+  .crit{color:var(--warn)} .good{color:var(--ok)}
+  details{border-top:1px solid var(--line);padding:8px 0}
+  summary{cursor:pointer;font-weight:600}
+  details p{margin:6px 0 0;color:var(--muted)}
+  .wide{grid-column:1/-1}
+</style>
+</head>
+<body>
+<header>
+  <h1>Cloud fleet monitor</h1>
+  <p>A simulated group of cloud servers behind a load balancer. Push the traffic up, crash a server, and watch the monitoring and autoscaling respond.</p>
+</header>
+
+<main>
+  <!-- LEFT: the fleet (list of servers) -->
+  <section aria-label="Servers">
+    <h2>Servers</h2>
+    <div id="fleet"></div>
+  </section>
+
+  <!-- MIDDLE: totals, charts, controls -->
+  <section aria-label="Metrics">
+    <div class="kpis">
+      <div class="kpi"><b id="kReq">0</b><span>requests per second</span></div>
+      <div class="kpi"><b id="kHealthy">0</b><span>healthy servers</span></div>
+      <div class="kpi"><b id="kCpu">0%</b><span>average CPU</span></div>
+    </div>
+    <h2 id="chartTitle">Selected server</h2>
+    <svg class="chart" id="chart" viewBox="0 0 600 170" preserveAspectRatio="none" role="img" aria-label="CPU and memory over the last 60 seconds"></svg>
+    <div class="legend"><span style="color:var(--teal)">&#9632; CPU</span> &nbsp; <span style="color:var(--warn)">&#9632; Memory</span> &nbsp; last 60 seconds</div>
+
+    <div class="controls">
+      <label>Incoming traffic: <input type="range" id="traffic" min="50" max="900" value="200"> <span id="trafficVal">200</span> req/s</label>
+    </div>
+    <div class="controls" style="margin-top:10px">
+      <button class="act" id="spike">Simulate traffic spike</button>
+      <button class="act alt" id="crash">Crash selected server</button>
+      <label><input type="checkbox" id="auto" checked> Autoscaling on</label>
+    </div>
+  </section>
+
+  <!-- RIGHT: alerts -->
+  <section aria-label="Alerts">
+    <h2>Alerts and events</h2>
+    <ul class="log" id="log"></ul>
+  </section>
+
+  <!-- BOTTOM: the concepts, explained -->
+  <section class="wide" aria-label="Concepts">
+    <h2>What you are looking at</h2>
+    <details><summary>Monitoring</summary><p>Every server reports metrics (CPU, memory) at a fixed interval. A monitoring system stores them and draws charts. Real tools that do this: Prometheus with Grafana, AWS CloudWatch, Datadog.</p></details>
+    <details><summary>Load balancer</summary><p>Spreads incoming requests across healthy servers. In this app each healthy server gets an equal share. If one server dies, the others take its share and their CPU rises.</p></details>
+    <details><summary>Health checks</summary><p>The load balancer keeps asking each server "are you alive?". A server that fails is taken out of rotation so users never get sent to it.</p></details>
+    <details><summary>Alerting and thresholds</summary><p>An alert fires when a metric crosses a threshold. Here: CPU above 90% is critical. Good alerts are specific and tell you what to do next.</p></details>
+    <details><summary>Autoscaling</summary><p>The platform adds servers when average CPU stays high (scale out) and removes them when it stays low (scale in), so you pay only for what you need. In AWS this is an Auto Scaling Group; in Kubernetes, the Horizontal Pod Autoscaler.</p></details>
+    <details><summary>Self-healing</summary><p>When autoscaling is on, a crashed server is replaced with a fresh one after a few seconds, with no human involved.</p></details>
+  </section>
+</main>
+
+<script>
+/* ============ 1. STATE: all the data lives here ============ */
+const CAPACITY = 100;      // requests per second one server can handle at 100% CPU
+const MAX_SERVERS = 8;
+let nextId = 1;
+let servers = [];          // each server is a plain object, see makeServer()
+let selectedId = null;
+let traffic = 200;         // incoming requests per second
+let highTicks = 0, lowTicks = 0;   // how long CPU has stayed high or low
+let clock = 0;             // seconds since start
+
+function makeServer(){
+  const id = nextId++;
+  return { id, name: "web-" + String(id).padStart(2, "0"), region: "af-south-1",
+           status: "healthy", cpu: 10, mem: 30, downFor: 0,
+           cpuHist: [], memHist: [] };
+}
+
+/* ============ 2. EVENTS LOG ============ */
+function log(text, cls){
+  const li = document.createElement("li");
+  const m = String(Math.floor(clock/60)).padStart(2,"0"), s = String(clock%60).padStart(2,"0");
+  li.innerHTML = '<span class="t">' + m + ':' + s + '</span><span class="' + (cls||"") + '">' + text + '</span>';
+  const ul = document.getElementById("log");
+  ul.prepend(li);
+  while (ul.children.length > 40) ul.lastChild.remove();
+}
+
+/* ============ 3. THE SIMULATION (runs once per second) ============ */
+function tick(){
+  clock++;
+  const healthy = servers.filter(s => s.status === "healthy");
+
+  // Load balancer: split traffic evenly across healthy servers
+  const perServer = healthy.length ? traffic / healthy.length : 0;
+
+  for (const s of servers){
+    if (s.status === "down"){
+      s.cpu = 0; s.mem = 0; s.downFor++;
+    } else {
+      // Target CPU = share of capacity used, plus a little random noise
+      const target = Math.min(100, (perServer / CAPACITY) * 100 + (Math.random()*6 - 3));
+      s.cpu += (target - s.cpu) * 0.4;           // move 40% of the way: smooth, not jumpy
+      s.mem += ((30 + s.cpu * 0.5) - s.mem) * 0.1; // memory follows CPU, but slowly
+      if (s.cpu > 90 && !s.alerted){ log(s.name + " CPU is " + Math.round(s.cpu) + "% (critical)", "crit"); s.alerted = true; }
+      if (s.cpu < 80) s.alerted = false;
+    }
+    s.cpuHist.push(s.cpu); s.memHist.push(s.mem);
+    if (s.cpuHist.length > 60){ s.cpuHist.shift(); s.memHist.shift(); }
+  }
+
+  autoscale(healthy);
+  render();
+}
+
+function autoscale(healthy){
+  const auto = document.getElementById("auto").checked;
+  if (!auto) return;
+
+  // Self-healing: replace servers that have been down for 5 seconds
+  for (const s of servers.filter(x => x.status === "down" && x.downFor >= 5)){
+    servers = servers.filter(x => x !== s);
+    const fresh = makeServer(); servers.push(fresh);
+    log(s.name + " replaced by " + fresh.name, "good");
+  }
+
+  // Scale out / in based on AVERAGE CPU over several seconds
+  const avg = healthy.length ? healthy.reduce((a,s)=>a+s.cpu,0)/healthy.length : 100;
+  highTicks = avg > 75 ? highTicks + 1 : 0;
+  lowTicks  = avg < 25 ? lowTicks + 1 : 0;
+
+  if (highTicks >= 3 && servers.length < MAX_SERVERS){
+    const s = makeServer(); servers.push(s); highTicks = 0;
+    log("Scale out: added " + s.name + " (average CPU " + Math.round(avg) + "%)", "good");
+  }
+  if (lowTicks >= 6 && healthy.length > 2){
+    const s = healthy[healthy.length - 1];
+    servers = servers.filter(x => x !== s); lowTicks = 0;
+    if (selectedId === s.id) selectedId = servers[0].id;
+    log("Scale in: removed " + s.name + " (average CPU " + Math.round(avg) + "%)", "good");
+  }
+}
+
+/* ============ 4. RENDERING: turn state into HTML ============ */
+function render(){
+  const healthy = servers.filter(s => s.status === "healthy");
+  const avg = healthy.length ? healthy.reduce((a,s)=>a+s.cpu,0)/healthy.length : 0;
+  document.getElementById("kReq").textContent = traffic;
+  document.getElementById("kHealthy").textContent = healthy.length + " / " + servers.length;
+  document.getElementById("kCpu").textContent = Math.round(avg) + "%";
+
+  // Server list
+  const fleet = document.getElementById("fleet");
+  fleet.innerHTML = "";
+  for (const s of servers){
+    const b = document.createElement("button");
+    b.className = "server";
+    b.setAttribute("aria-pressed", s.id === selectedId);
+    const state = s.status === "down" ? "down" : (s.cpu > 90 ? "hot" : "");
+    const label = s.status === "down" ? "down" : "CPU " + Math.round(s.cpu) + "%";
+    b.innerHTML = '<span><span class="dot ' + state + '"></span>' + s.name + '<small>' + s.region + '</small></span><span>' + label + '</span>';
+    b.onclick = () => { selectedId = s.id; render(); };
+    fleet.appendChild(b);
+  }
+
+  // Chart for the selected server
+  const sel = servers.find(s => s.id === selectedId) || servers[0];
+  if (sel){
+    selectedId = sel.id;
+    document.getElementById("chartTitle").textContent = sel.name + (sel.status === "down" ? " (down)" : "");
+    document.getElementById("chart").innerHTML =
+      grid() + line(sel.cpuHist, "var(--teal)") + line(sel.memHist, "var(--warn)");
+  }
+}
+
+// Draw a series of 0-100 values as an SVG polyline (width 600, height 170)
+function line(data, colour){
+  if (data.length < 2) return "";
+  const step = 600 / 59;
+  const pts = data.map((v,i) => (i*step).toFixed(1) + "," + (170 - v*1.7).toFixed(1)).join(" ");
+  return '<polyline fill="none" stroke="' + colour + '" stroke-width="2" vector-effect="non-scaling-stroke" points="' + pts + '"/>';
+}
+// Faint guide lines at 50% and the 90% alert threshold
+function grid(){
+  return '<line x1="0" x2="600" y1="85" y2="85" stroke="var(--line)"/>' +
+         '<line x1="0" x2="600" y1="17" y2="17" stroke="var(--warn)" stroke-dasharray="4 4" opacity=".6"/>';
+}
+
+/* ============ 5. CONTROLS ============ */
+const slider = document.getElementById("traffic");
+slider.oninput = () => { traffic = +slider.value; document.getElementById("trafficVal").textContent = traffic; };
+
+document.getElementById("spike").onclick = () => {
+  traffic = Math.min(900, traffic + 400);
+  slider.value = traffic; document.getElementById("trafficVal").textContent = traffic;
+  log("Traffic spike: now " + traffic + " req/s", "crit");
+};
+
+document.getElementById("crash").onclick = () => {
+  const s = servers.find(x => x.id === selectedId);
+  if (s && s.status === "healthy"){
+    s.status = "down"; s.downFor = 0;
+    log("Health check failed: " + s.name + " removed from load balancer", "crit");
+  }
+};
+
+/* ============ 6. START ============ */
+servers = [makeServer(), makeServer(), makeServer()];
+selectedId = servers[0].id;
+log("Fleet started with 3 servers");
+render();
+setInterval(tick, 1000);
+</script>
+</body>
+</html>
